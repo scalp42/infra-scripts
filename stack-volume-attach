@@ -4,7 +4,7 @@ set -eu -o pipefail
 DEVICE=/dev/xvdd
 
 if [ $# -lt 2 ]; then
-  echo "$0 volume-id mountpoint" >&2
+  echo "$0 volume-name mountpoint" >&2
   exit 1
 fi
 
@@ -12,7 +12,7 @@ if [ $# -gt 2 ]; then
   DEVICE="$3"
 fi
 
-BELONGS_TO=$1
+VOLUME_NAME=$1
 MNT=$2
 INSTANCE_ID=$(curl -sL http://169.254.169.254/latest/meta-data/instance-id)
 AZ=$(curl -sL http://169.254.169.254/latest/meta-data/placement/availability-zone)
@@ -23,12 +23,12 @@ STACK_ID=$(aws --region "$REGION" ec2 describe-instances --instance-ids "$INSTAN
 
 VOLUMES=$(aws ec2 --region "$REGION" describe-volumes --filters \
   "Name=tag:aws:cloudformation:stack-id,Values=$STACK_ID" \
-  "Name=tag:belongs-to,Values=$BELONGS_TO" \
+  "Name=tag:volume-name,Values=$VOLUME_NAME" \
   "Name=availability-zone,Values=$AZ"
 )
 
 if [ "$(echo "$VOLUMES" | jq -r '.Volumes[0]')" == "null" ]; then
-  echo "Volume $LOGICAL_ID not found in stack $STACK_ID / $AZ" >&2
+  echo "No EBS volume in $AZ tagged volume-name:$VOLUME_NAME found in stack $STACK_ID" >&2
   exit 1
 fi
 
@@ -43,7 +43,7 @@ fi
 if ! [ -b "$DEVICE" ]; then
     VOLUME_STATE=$(echo "$VOLUMES" | jq -r '.Volumes[0].State')
     if [ "$VOLUME_STATE" != "available" ]; then
-        echo "VOLUME_ID is not available"
+        echo "Volume $VOLUME_NAME is not available"
         exit 1
     fi
 
