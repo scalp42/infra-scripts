@@ -18,22 +18,37 @@ INSTANCE_ID=$(curl -sL http://169.254.169.254/latest/meta-data/instance-id)
 AZ=$(curl -sL http://169.254.169.254/latest/meta-data/placement/availability-zone)
 REGION=$(echo "$AZ" | sed 's/[^0-9]*$//')
 
-STACK_ID=$(aws --region "$REGION" ec2 describe-instances --instance-ids "$INSTANCE_ID" \
-  | jq -r '.Reservations[0].Instances[0].Tags[]|select(.Key == "aws:cloudformation:stack-id").Value')
+VOLUME_GROUP=$(aws --region "$REGION" ec2 describe-instances --instance-ids "$INSTANCE_ID" \
+  | jq -r '.Reservations[0].Instances[0].Tags[]|select(.Key == "ebs-volume-group").Value')
 
-VOLUMES=$(aws ec2 --region "$REGION" describe-volumes --filters \
-  "Name=tag:aws:cloudformation:stack-id,Values=$STACK_ID" \
-  "Name=tag:volume-name,Values=$VOLUME_NAME" \
-  "Name=availability-zone,Values=$AZ"
-)
+if [ -n "$VOLUME_GROUP" ]; then
+  VOLUMES=$(aws ec2 --region "$REGION" describe-volumes --filters \
+    "Name=tag:volume-group,Values=$VOLUME_GROUP" \
+    "Name=tag:volume-name,Values=$VOLUME_NAME" \
+    "Name=availability-zone,Values=$AZ"
+  )
+  if [ "$(echo "$VOLUMES" | jq -r '.Volumes[0]')" == "null" ]; then
+    echo "No EBS volume in $AZ tagged volume-name:$VOLUME_NAME and volume-group:$VOLUME_GROUP found" >&2
+    exit 1
+  fi
+else
+  echo "Tag 'ebs-volume-group' is empty, using instance stack to find volume"
+  STACK_ID=$(aws --region "$REGION" ec2 describe-instances --instance-ids "$INSTANCE_ID" \
+    | jq -r '.Reservations[0].Instances[0].Tags[]|select(.Key == "aws:cloudformation:stack-id").Value')
 
-if [ "$(echo "$VOLUMES" | jq -r '.Volumes[0]')" == "null" ]; then
-  echo "No EBS volume in $AZ tagged volume-name:$VOLUME_NAME found in stack $STACK_ID" >&2
-  exit 1
+  VOLUMES=$(aws ec2 --region "$REGION" describe-volumes --filters \
+    "Name=tag:aws:cloudformation:stack-id,Values=$STACK_ID" \
+    "Name=tag:volume-name,Values=$VOLUME_NAME" \
+    "Name=availability-zone,Values=$AZ"
+  )
+  if [ "$(echo "$VOLUMES" | jq -r '.Volumes[0]')" == "null" ]; then
+    echo "No EBS volume in $AZ tagged volume-name:$VOLUME_NAME found in stack $STACK_ID" >&2
+    exit 1
+  fi
 fi
 
 if [ "$(echo "$VOLUMES" | jq -r '.Volumes[1]')" != "null" ]; then
-  echo "More than one volume for stack $STACK_ID in $AZ found" >&2
+  echo "More than one volume in $AZ found: $VOLUMES" >&2
   exit 1
 fi
 
@@ -41,15 +56,15 @@ fi
 # If not, let's check the state of the volume and if it is
 # available, let's attach it to this instance
 if ! [ -b "$DEVICE" ]; then
-    VOLUME_STATE=$(echo "$VOLUMES" | jq -r '.Volumes[0].State')
-    if [ "$VOLUME_STATE" != "available" ]; then
-        echo "Volume $VOLUME_NAME is not available"
-        exit 1
-    fi
+  VOLUME_STATE=$(echo "$VOLUMES" | jq -r '.Volumes[0].State')
+  if [ "$VOLUME_STATE" != "available" ]; then
+    echo "Volume $VOLUME_NAME is not available"
+    exit 1
+  fi
 
-    VOLUME_ID=$(echo "$VOLUMES" | jq -r '.Volumes[0].VolumeId')
-    aws --region "$REGION" ec2 attach-volume --volume-id "$VOLUME_ID" --instance-id "$INSTANCE_ID" --device "$DEVICE" \
-       || exit 1
+  VOLUME_ID=$(echo "$VOLUMES" | jq -r '.Volumes[0].VolumeId')
+  aws --region "$REGION" ec2 attach-volume --volume-id "$VOLUME_ID" --instance-id "$INSTANCE_ID" --device "$DEVICE" \
+    || exit 1
 fi
 
 if ! [ -b "${DEVICE}1" ]; then
