@@ -3,52 +3,49 @@ set -eu -o pipefail
 
 DEVICE=/dev/xvdd
 
-if [ $# -lt 2 ]; then
-  echo "$0 volume-name mountpoint" >&2
+if [ $# -lt 1 ]; then
+  echo "$0 mountpoint [volume-name] [device]" >&2
   exit 1
+fi
+
+MNT=$1
+
+INSTANCE_ID=$(curl -sL http://169.254.169.254/latest/meta-data/instance-id)
+AZ=$(curl -sL http://169.254.169.254/latest/meta-data/placement/availability-zone)
+REGION=$(echo "$AZ" | sed 's/[^0-9]*$//')
+
+FILTERS=("Name=availability-zone,Values=$AZ")
+
+if [ $# -gt 1 ]; then
+  FILTERS+=("Name=tag:volume-name,Values=$2")
 fi
 
 if [ $# -gt 2 ]; then
   DEVICE="$3"
 fi
 
-VOLUME_NAME=$1
-MNT=$2
-INSTANCE_ID=$(curl -sL http://169.254.169.254/latest/meta-data/instance-id)
-AZ=$(curl -sL http://169.254.169.254/latest/meta-data/placement/availability-zone)
-REGION=$(echo "$AZ" | sed 's/[^0-9]*$//')
-
 VOLUME_GROUP=$(aws --region "$REGION" ec2 describe-instances --instance-ids "$INSTANCE_ID" \
   | jq -r '.Reservations[0].Instances[0].Tags[]|select(.Key == "ebs-volume-group").Value')
 
 if [ -n "$VOLUME_GROUP" ]; then
-  VOLUMES=$(aws ec2 --region "$REGION" describe-volumes --filters \
-    "Name=tag:volume-group,Values=$VOLUME_GROUP" \
-    "Name=tag:volume-name,Values=$VOLUME_NAME" \
-    "Name=availability-zone,Values=$AZ"
-  )
-  if [ "$(echo "$VOLUMES" | jq -r '.Volumes[0]')" == "null" ]; then
-    echo "No EBS volume in $AZ tagged volume-name:$VOLUME_NAME and volume-group:$VOLUME_GROUP found" >&2
-    exit 1
-  fi
+  FILTERS+=("Name=tag:volume-group,Values=$VOLUME_GROUP")
 else
   echo "Tag 'ebs-volume-group' is empty, using instance stack to find volume"
   STACK_ID=$(aws --region "$REGION" ec2 describe-instances --instance-ids "$INSTANCE_ID" \
     | jq -r '.Reservations[0].Instances[0].Tags[]|select(.Key == "aws:cloudformation:stack-id").Value')
 
-  VOLUMES=$(aws ec2 --region "$REGION" describe-volumes --filters \
-    "Name=tag:aws:cloudformation:stack-id,Values=$STACK_ID" \
-    "Name=tag:volume-name,Values=$VOLUME_NAME" \
-    "Name=availability-zone,Values=$AZ"
-  )
-  if [ "$(echo "$VOLUMES" | jq -r '.Volumes[0]')" == "null" ]; then
-    echo "No EBS volume in $AZ tagged volume-name:$VOLUME_NAME found in stack $STACK_ID" >&2
-    exit 1
-  fi
+  FILTERS+=("Name=tag:aws:cloudformation:stack-id,Values=$STACK_ID")
+fi
+
+VOLUMES=$(aws ec2 --region "$REGION" describe-volumes --filters ${FILTERS[@]})
+
+if [ "$(echo "$VOLUMES" | jq -r '.Volumes[0]')" == "null" ]; then
+  echo "Filters '$FILTERS' didn't return any volume in $AZ" >&2
+  exit 1
 fi
 
 if [ "$(echo "$VOLUMES" | jq -r '.Volumes[1]')" != "null" ]; then
-  echo "More than one volume in $AZ found: $VOLUMES" >&2
+  echo "Filters '$FILTERS' returned more than one volume in $AZ. Volumes: $VOLUMES" >&2
   exit 1
 fi
 
@@ -58,7 +55,7 @@ fi
 if ! [ -b "$DEVICE" ]; then
   VOLUME_STATE=$(echo "$VOLUMES" | jq -r '.Volumes[0].State')
   if [ "$VOLUME_STATE" != "available" ]; then
-    echo "Volume $VOLUME_NAME is not available"
+    echo "Volume is not available, Volume: $VOLUMES"
     exit 1
   fi
 
