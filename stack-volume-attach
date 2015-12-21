@@ -73,3 +73,4 @@ if ! [ -b "${DEVICE}1" ]; then
 fi
 
 grep "^${DEVICE}1" /proc/mounts || mount "${DEVICE}1" "$MNT"
+echo "$VOLUMES" | jq -r '.Volumes[0]' > "$MNT/.volume.json"
