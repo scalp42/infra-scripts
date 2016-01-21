@@ -1,0 +1,47 @@
+#!/bin/bash
+set -exuo pipefail
+DEST=""
+PID=""
+
+function exit_trap() {
+  rm -f "$DEST"
+  consul reload
+  exit $?
+}
+
+while getopts ":d:" opt; do
+  case "$opt" in
+    d)
+      DEST="$OPTARG";;
+    \?)
+      echo "Flag -$OPTARG undefined" >&2
+      exit 1
+      ;;
+    :)
+      echo "Flag -$OPTARG requires argument" >&2
+      exit 1
+      ;;
+  esac
+done
+shift $(($OPTIND - 1))
+if [ "$#" -lt 2 ]; then
+  echo "Usage: $0 [-d path/to/consul/service.json] source-service.json command [args...]" >&2
+  exit 1
+fi
+SOURCE="$1"; shift
+
+if [ -z "$DEST" ]; then
+  DEST="/etc/consul/$1.json"
+fi
+
+trap exit_trap EXIT
+DIR=$(dirname "$DEST")
+if ! [ -d "$DIR" ]; then
+  echo "Destination directory $DIR doesn't exist" >&2
+fi
+
+"$@" &
+PID="$!"
+cp "$SOURCE" "$DEST"
+consul reload
+wait "$PID"
