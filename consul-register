@@ -1,11 +1,11 @@
 #!/bin/bash
-set -exuo pipefail
+set -euo pipefail
 DEST=""
 PID=""
 
 function exit_trap() {
-  rm -f "$DEST"
-  consul reload
+  rm -f "$DEST" && consul reload || true
+  kill "$PID" && wait "$PID"
   exit $?
 }
 
