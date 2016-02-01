@@ -4,8 +4,11 @@ DEST=""
 PID=""
 
 function exit_trap() {
+  echo "Cleaning up"
   rm -f "$DEST" && consul reload || true
+  kill "-$PID" || true
   kill "$PID" && wait "$PID"
+  echo "- Waiting for process"
   exit $?
 }
 
